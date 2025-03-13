@@ -13,6 +13,8 @@ This folder contains code to:
 python3.6.13 graphInputData.py
 ```
 
+Note: simply click close the graph window to get the next one to display.
+
 # Processing the raw collected data under ./data/
 
 ```
@@ -264,12 +266,6 @@ void loop() {
 
 * Include model.h as a separate tab in the same arduino sketch so that it can be found during compilation.
 
-```
-
-
-```
-
-
 # Program the Arduino
 
 * Compile the sketch
@@ -417,3 +413,14 @@ Write 490132 bytes to flash (120 pages)
 Done in 19.166 seconds
 
 ```
+
+# Test the model output via a terminal program (e.g Putty on windows or the `cu` utility for Macosx or Linux)
+
+* Connecting with cu (idenitfy the usb device name by looking it up in the Arduino IDE):
+
+
+```
+
+
+```
+
