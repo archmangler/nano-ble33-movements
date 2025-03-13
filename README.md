@@ -1,5 +1,7 @@
 # Gesture recognition data processing and model training code
 
+**TODO** Cleanup for readability !!!
+
 This folder contains code to:
 
 * Process data obtained from the Arduino Nano serial monitor (scraped off the consol)
