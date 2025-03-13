@@ -6,6 +6,7 @@ import os
 import subprocess
 
 def generate_header_file(tflite_model_path, header_path):
+    """Generate a C header file from a TFLite model."""
     # Read the TFLite model binary
     with open(tflite_model_path, 'rb') as f:
         model_bytes = f.read()
@@ -24,193 +25,194 @@ def generate_header_file(tflite_model_path, header_path):
         f.write('\n};\n')
         f.write(f'const unsigned int model_len = {len(model_bytes)};\n')
 
+def backup_existing_model(header_path):
+    """Backup existing model.h file with timestamp if it exists."""
+    if os.path.exists(header_path):
+        timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+        backup_path = f"{header_path[:-2]}_{timestamp}.h"
+        os.rename(header_path, backup_path)
+        print(f"Backed up existing model.h to {os.path.basename(backup_path)}")
 
-print(f"TensorFlow version = {tf.__version__}\n")
+def load_and_preprocess_data(gestures, samples_per_gesture):
+    """Load and preprocess gesture data from CSV files."""
+    inputs = []
+    outputs = []
+    one_hot_encoded_gestures = np.eye(len(gestures))
+    
+    for gesture_index, gesture in enumerate(gestures):
+        print(f"Processing index {gesture_index} for gesture '{gesture}'.")
+        output = one_hot_encoded_gestures[gesture_index]
+        
+        df = pd.read_csv("./data/" + gesture + ".csv")
+        num_recordings = int(df.shape[0] / samples_per_gesture)
+        print(f"\tThere are {num_recordings} recordings of the {gesture} gesture.")
+        
+        for i in range(num_recordings):
+            tensor = []
+            for j in range(samples_per_gesture):
+                index = i * samples_per_gesture + j
+                # Normalize the input data
+                tensor += [
+                    (df['aX'][index] + 4) / 8,
+                    (df['aY'][index] + 4) / 8,
+                    (df['aZ'][index] + 4) / 8,
+                    (df['gX'][index] + 2000) / 4000,
+                    (df['gY'][index] + 2000) / 4000,
+                    (df['gZ'][index] + 2000) / 4000
+                ]
+            inputs.append(tensor)
+            outputs.append(output)
+    
+    return np.array(inputs), np.array(outputs)
 
-# Set a fixed random seed value, for reproducibility, this will allow us to get
-# the same random numbers each time the notebook is run
-SEED = 1337
-np.random.seed(SEED)
-tf.random.set_seed(SEED)
+def split_data(inputs, outputs, train_split=0.6, test_split=0.2):
+    """Split data into training, testing, and validation sets."""
+    num_inputs = len(inputs)
+    randomize = np.arange(num_inputs)
+    np.random.shuffle(randomize)
+    
+    inputs = inputs[randomize]
+    outputs = outputs[randomize]
+    
+    train_size = int(train_split * num_inputs)
+    test_size = int(test_split * num_inputs + train_size)
+    
+    inputs_train, inputs_test, inputs_validate = np.split(inputs, [train_size, test_size])
+    outputs_train, outputs_test, outputs_validate = np.split(outputs, [train_size, test_size])
+    
+    return (inputs_train, inputs_test, inputs_validate), (outputs_train, outputs_test, outputs_validate)
 
-# the list of gestures that data is available for
-GESTURES = [
-    "punch",
-    "flex",
-    "sidelift",
-    "rotcurl",
-    "curl",
-]
+def create_and_train_model(inputs_train, outputs_train, inputs_validate, outputs_validate, num_gestures, epochs=600):
+    """Create and train the neural network model."""
+    model = tf.keras.Sequential([
+        tf.keras.layers.Dense(50, activation='relu'),
+        tf.keras.layers.Dense(15, activation='relu'),
+        tf.keras.layers.Dense(num_gestures, activation='softmax')
+    ])
+    
+    model.compile(optimizer='rmsprop', loss='mse', metrics=['mae'])
+    history = model.fit(
+        inputs_train, outputs_train,
+        epochs=epochs,
+        batch_size=1,
+        validation_data=(inputs_validate, outputs_validate)
+    )
+    
+    return model, history
 
-SAMPLES_PER_GESTURE = 119
-
-NUM_GESTURES = len(GESTURES)
-
-# create a one-hot encoded matrix that is used in the output
-ONE_HOT_ENCODED_GESTURES = np.eye(NUM_GESTURES)
-
-inputs = []
-outputs = []
-
-# read each csv file and push an input and output
-for gesture_index in range(NUM_GESTURES):
-  gesture = GESTURES[gesture_index]
-  print(f"Processing index {gesture_index} for gesture '{gesture}'.")
-  
-  output = ONE_HOT_ENCODED_GESTURES[gesture_index]
-  
-  # obviously this is coupled to the data file name
-  df = pd.read_csv("./data/" + gesture + ".csv")
-  
-  # calculate the number of gesture recordings in the file
-  num_recordings = int(df.shape[0] / SAMPLES_PER_GESTURE)
-  
-  print(f"\tThere are {num_recordings} recordings of the {gesture} gesture.")
-  
-  for i in range(num_recordings):
-    tensor = []
-    for j in range(SAMPLES_PER_GESTURE):
-      index = i * SAMPLES_PER_GESTURE + j
-      # normalize the input data, between 0 to 1:
-      # - acceleration is between: -4 to +4
-      # - gyroscope is between: -2000 to +2000
-      tensor += [
-          (df['aX'][index] + 4) / 8,
-          (df['aY'][index] + 4) / 8,
-          (df['aZ'][index] + 4) / 8,
-          (df['gX'][index] + 2000) / 4000,
-          (df['gY'][index] + 2000) / 4000,
-          (df['gZ'][index] + 2000) / 4000
-      ]
-
-    inputs.append(tensor)
-    outputs.append(output)
-
-# convert the list to numpy array
-inputs = np.array(inputs)
-outputs = np.array(outputs)
-
-print("Data set parsing and preparation complete.")
-print("\n")
-
-# Randomize the order of the inputs, so they can be evenly distributed for training, testing, and validation
-# https://stackoverflow.com/a/37710486/2020087
-num_inputs = len(inputs)
-randomize = np.arange(num_inputs)
-np.random.shuffle(randomize)
-
-# Swap the consecutive indexes (0, 1, 2, etc) with the randomized indexes
-inputs = inputs[randomize]
-outputs = outputs[randomize]
-
-# Split the recordings (group of samples) into three sets: training, testing and validation
-TRAIN_SPLIT = int(0.6 * num_inputs)
-TEST_SPLIT = int(0.2 * num_inputs + TRAIN_SPLIT)
-
-inputs_train, inputs_test, inputs_validate = np.split(inputs, [TRAIN_SPLIT, TEST_SPLIT])
-outputs_train, outputs_test, outputs_validate = np.split(outputs, [TRAIN_SPLIT, TEST_SPLIT])
-
-print("Data set randomization and splitting complete.")
-
-# build the model and train it
-model = tf.keras.Sequential()
-model.add(tf.keras.layers.Dense(50, activation='relu')) # relu is used for performance
-model.add(tf.keras.layers.Dense(15, activation='relu'))
-model.add(tf.keras.layers.Dense(NUM_GESTURES, activation='softmax')) # softmax is used, because we only expect one gesture to occur per input
-model.compile(optimizer='rmsprop', loss='mse', metrics=['mae'])
-history = model.fit(inputs_train, outputs_train, epochs=600, batch_size=1, validation_data=(inputs_validate, outputs_validate))
-
-print("Training and Model building is complete.\n")
-
-print("Graphing the model loss function ...\n")
-
-# increase the size of the graphs. The default size is (6,4).
-plt.rcParams["figure.figsize"] = (20,10)
-
-# graph the loss, the model above is configure to use "mean squared error" as the loss function
-loss = history.history['loss']
-val_loss = history.history['val_loss']
-epochs = range(1, len(loss) + 1)
-plt.plot(epochs, loss, 'g.', label='Training loss')
-plt.plot(epochs, val_loss, 'b', label='Validation loss')
-plt.title('Training and validation loss')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.legend()
-plt.show()
-
-print(plt.rcParams["figure.figsize"])
-
-
-# Graph the loss, but this time skipping the rubbish at the start
-
-# graph the loss again skipping a bit of the start
-SKIP = 100
-plt.plot(epochs[SKIP:], loss[SKIP:], 'g.', label='Training loss')
-plt.plot(epochs[SKIP:], val_loss[SKIP:], 'b.', label='Validation loss')
-plt.title('Training and validation loss')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.legend()
-plt.show()
-
-# Graph the mean absolute error
-# graph of mean absolute error
-mae = history.history['mae']
-val_mae = history.history['val_mae']
-plt.plot(epochs[SKIP:], mae[SKIP:], 'g.', label='Training MAE')
-plt.plot(epochs[SKIP:], val_mae[SKIP:], 'b.', label='Validation MAE')
-plt.title('Training and validation mean absolute error')
-plt.xlabel('Epochs')
-plt.ylabel('MAE')
-plt.legend()
-plt.show()
-
-print("Testing: Using the model to predict the gesture from the test data set ...")
-
-# use the model to predict the test inputs
-predictions = model.predict(inputs_test)
-
-# print the predictions and the expected outputs
-print("predictions =\n", np.round(predictions, decimals=3))
-print("actual =\n", outputs_test)
-
-# Plot the predictions vs actual values for each gesture
-plt.figure(figsize=(20,10))
-for i in range(NUM_GESTURES):
-    plt.subplot(2, 3, i+1)
-    plt.title(f'Gesture: {GESTURES[i]}')
-    sample_indices = range(len(outputs_test))
-    plt.plot(sample_indices, outputs_test[:, i], 'b.', label='Actual', alpha=0.5)
-    plt.plot(sample_indices, predictions[:, i], 'r.', label='Predicted', alpha=0.5)
-    plt.xlabel('Sample Index')
-    plt.ylabel('Probability')
+def plot_training_history(history, skip_epochs=100):
+    """Plot training history including loss and MAE."""
+    plt.rcParams["figure.figsize"] = (20, 10)
+    
+    # Plot loss
+    loss = history.history['loss']
+    val_loss = history.history['val_loss']
+    epochs = range(1, len(loss) + 1)
+    
+    plt.figure()
+    plt.plot(epochs, loss, 'g.', label='Training loss')
+    plt.plot(epochs, val_loss, 'b', label='Validation loss')
+    plt.title('Training and validation loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
     plt.legend()
-plt.tight_layout()
-plt.show()
+    plt.show()
+    
+    # Plot loss (skipping initial epochs)
+    plt.figure()
+    plt.plot(epochs[skip_epochs:], loss[skip_epochs:], 'g.', label='Training loss')
+    plt.plot(epochs[skip_epochs:], val_loss[skip_epochs:], 'b.', label='Validation loss')
+    plt.title('Training and validation loss (after initial epochs)')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
+    
+    # Plot MAE
+    plt.figure()
+    mae = history.history['mae']
+    val_mae = history.history['val_mae']
+    plt.plot(epochs[skip_epochs:], mae[skip_epochs:], 'g.', label='Training MAE')
+    plt.plot(epochs[skip_epochs:], val_mae[skip_epochs:], 'b.', label='Validation MAE')
+    plt.title('Training and validation mean absolute error')
+    plt.xlabel('Epochs')
+    plt.ylabel('MAE')
+    plt.legend()
+    plt.show()
 
-print("Testing is complete.")
+def plot_predictions(model, inputs_test, outputs_test, gestures):
+    """Plot model predictions against actual values."""
+    predictions = model.predict(inputs_test)
+    print("predictions =\n", np.round(predictions, decimals=3))
+    print("actual =\n", outputs_test)
+    
+    plt.figure(figsize=(20, 10))
+    for i, gesture in enumerate(gestures):
+        plt.subplot(2, 3, i+1)
+        plt.title(f'Gesture: {gesture}')
+        sample_indices = range(len(outputs_test))
+        plt.plot(sample_indices, outputs_test[:, i], 'b.', label='Actual', alpha=0.5)
+        plt.plot(sample_indices, predictions[:, i], 'r.', label='Predicted', alpha=0.5)
+        plt.xlabel('Sample Index')
+        plt.ylabel('Probability')
+        plt.legend()
+    plt.tight_layout()
+    plt.show()
 
-# Convert the Trained Model to Tensor Flow Lite ("TFlite" format)
+def main():
+    # Set random seeds for reproducibility
+    SEED = 1337
+    np.random.seed(SEED)
+    tf.random.set_seed(SEED)
+    
+    # Define gestures and parameters
+    GESTURES = ["punch", "flex", "sidelift", "rotcurl", "curl"]
+    SAMPLES_PER_GESTURE = 119
+    
+    print(f"TensorFlow version = {tf.__version__}\n")
+    
+    # Load and preprocess data
+    inputs, outputs = load_and_preprocess_data(GESTURES, SAMPLES_PER_GESTURE)
+    print("Data set parsing and preparation complete.\n")
+    
+    # Split data
+    (inputs_train, inputs_test, inputs_validate), (outputs_train, outputs_test, outputs_validate) = split_data(inputs, outputs)
+    print("Data set randomization and splitting complete.")
+    
+    # Create and train model
+    model, history = create_and_train_model(inputs_train, outputs_train, inputs_validate, outputs_validate, len(GESTURES))
+    print("Training and Model building is complete.\n")
+    
+    # Plot training history
+    print("Graphing the model loss function ...\n")
+    plot_training_history(history)
+    
+    # Plot predictions
+    print("Testing: Using the model to predict the gesture from the test data set ...")
+    plot_predictions(model, inputs_test, outputs_test, GESTURES)
+    print("Testing is complete.")
+    
+    # Convert model to TFLite and generate header file
+    print("\nConverting model to TFLite format...")
+    converter = tf.lite.TFLiteConverter.from_keras_model(model)
+    tflite_model = converter.convert()
+    
+    # Save the model
+    open("gesture_model.tflite", "wb").write(tflite_model)
+    basic_model_size = os.path.getsize("gesture_model.tflite")
+    print("Model is %d bytes" % basic_model_size)
+    
+    # Generate header file
+    os.makedirs('./output', exist_ok=True)
+    header_path = './output/model.h'
+    backup_existing_model(header_path)
+    generate_header_file('gesture_model.tflite', header_path)
+    
+    model_h_size = os.path.getsize(header_path)
+    print(f"Header file, model.h, is {model_h_size:,} bytes.")
+    print("\nModel has been converted to model.h in the output directory.")
 
-# Convert the model to the TensorFlow Lite format without quantization
-converter = tf.lite.TFLiteConverter.from_keras_model(model)
-tflite_model = converter.convert()
+if __name__ == "__main__":
+    main()
 
-# Save the model to disk
-open("gesture_model.tflite", "wb").write(tflite_model)
-  
-basic_model_size = os.path.getsize("gesture_model.tflite")
-print("Model is %d bytes" % basic_model_size)
-
-# Create output directory if it doesn't exist
-os.makedirs('./output', exist_ok=True)
-# Generate C header file
-
-# Generate the header file
-generate_header_file('gesture_model.tflite', './output/model.h')
-
-model_h_size = os.path.getsize("./output/model.h")
-print(f"Header file, model.h, is {model_h_size:,} bytes.")
-print("\nModel has been converted to model.h in the output directory.")
 
